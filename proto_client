@@ -1,26 +1,17 @@
 
 
 
-connect_server()
+server = connect_server()
 
-public_key = create_pub_key()
-private_key = create_private_key()
+shared_secret_key = diffieHellman(server)
 
-
-write(public_key)
-
-read(encrypted_answer)
-
-answer = decrypt_async(encrypted_answer, private_key)
-
-symmetric_key = read_symmetric_key(answer)
 
 while(1) {
     command = read_keyboard_command
 
     add_checksum(command)
 
-    encrypt(command, symmetric_key)
+    encrypt(command, shared_secret_key)
 
     write(command)
 

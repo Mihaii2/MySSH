@@ -1,4 +1,5 @@
 
+
 while(1) {
 
     client = accept_client()
@@ -7,18 +8,12 @@ while(1) {
 
     /////////// CHILD
 
-    public_key = read_public_key(client)
-
-    symmetric_key = create_symmetric_key()
-
-    answer = public_key_encrypt(symmetric_key)
-
-    write(answer)
+    shared_secret_key = diffieHellman(client)
 
     while(1) {
         encrypted_command = read(client)
 
-        command = decrypt(encrypted_command, symmetric_key)
+        command = decrypt(encrypted_command, shared_secret_key)
 
         check_result = check_sum(command)
 
@@ -35,7 +30,7 @@ while(1) {
 
             add_checksum(chunk)
 
-            encrypted_answer = encrypt(chunk, symmetric_key)
+            encrypted_answer = encrypt(chunk, shared_secret_key)
 
             write(encrypted_answer)
 
@@ -45,7 +40,7 @@ while(1) {
 
         add_checksum(answer_end)
 
-        encrypted_answer_end = encrypt(answer_end, symmetric_key)
+        encrypted_answer_end = encrypt(answer_end, shared_secret_key)
 
         write(encrypted_answer_end)
 
