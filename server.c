@@ -23,7 +23,7 @@ void send_encrypted_msg(int sockfd, char* command, int cmd_len) {
 
 int read_encrypted_msg(int sockfd, char* buffer, int buf_size) {
     int codRead = 0, total_bytes = 0;
-    while(total_bytes < sizeof(int)) {
+    while(total_bytes < sizeof(int)) { // read message length(from begginning of buffer)
         codRead = read(sockfd, buffer + total_bytes, sizeof(int) - total_bytes);
         if(codRead < 0) {
             perror("Failed at read():");
@@ -33,7 +33,7 @@ int read_encrypted_msg(int sockfd, char* buffer, int buf_size) {
     }
     int msg_len = ntohl(*(int*)buffer);
 
-    while(total_bytes < msg_len + sizeof(int)) {
+    while(total_bytes < msg_len + sizeof(int)) { // read rest of message
         codRead = read(sockfd, buffer + total_bytes, msg_len + sizeof(int) - total_bytes);
         if(codRead < 0) {
             perror("Failed at read():");
@@ -58,12 +58,17 @@ void network_send_integer(int sockfd, int integer) {
 
 int network_receive_integer(int sockfd) {
     int network_integer;
-    if (recv(sockfd, &network_integer, sizeof(network_integer), 0) == -1) {
-        perror("Failed to receive integer");
-        exit(EXIT_FAILURE);
+    int total_bytes = 0;
+    while(total_bytes < sizeof(int)) {
+        int codRead = read(sockfd, &network_integer + total_bytes, sizeof(int) - total_bytes);
+        if(codRead < 0) {
+            perror("Failed at read():");
+            exit(1);
+        }
+        total_bytes += codRead;
     }
-    return ntohl(network_integer);
 
+    return ntohl(network_integer);
 }
 
 
@@ -152,8 +157,7 @@ int Diffie_Hellman(int sockfd) {
     printf("Sending public key: %d\n", public_key);
     network_send_integer(sockfd, public_key);
 
-
-    // Receive public key from the server
+    // Receive public key from the client
     int partner_public_key = network_receive_integer(sockfd);
     
 

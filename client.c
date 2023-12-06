@@ -27,6 +27,8 @@ void send_encrypted_msg(int sockfd, char* command, int cmd_len) {
 
 int read_encrypted_msg(int sockfd, char* buffer, int buf_size) {
     int codRead = 0, total_bytes = 0;
+
+    // read message length(from begginning of buffer)
     while(total_bytes < sizeof(int)) {
         codRead = read(sockfd, buffer + total_bytes, sizeof(int) - total_bytes);
         if(codRead < 0) {
@@ -37,6 +39,7 @@ int read_encrypted_msg(int sockfd, char* buffer, int buf_size) {
     }
     int msg_len = ntohl(*(int*)buffer);
 
+    // read rest of message
     while(total_bytes < msg_len + sizeof(int)) {
         codRead = read(sockfd, buffer + total_bytes, msg_len + sizeof(int) - total_bytes);
         if(codRead < 0) {
@@ -62,12 +65,17 @@ void network_send_integer(int sockfd, int integer) {
 
 int network_receive_integer(int sockfd) {
     int network_integer;
-    if (read(sockfd, &network_integer, sizeof(network_integer)) == -1) {
-        perror("Failed to receive integer");
-        exit(EXIT_FAILURE);
+    int total_bytes = 0;
+    while(total_bytes < sizeof(int)) {
+        int codRead = read(sockfd, &network_integer + total_bytes, sizeof(int) - total_bytes);
+        if(codRead < 0) {
+            perror("Failed at read():");
+            exit(1);
+        }
+        total_bytes += codRead;
     }
-    return ntohl(network_integer);
 
+    return ntohl(network_integer);
 }
 
 int connect_server(int port) {
