@@ -174,29 +174,31 @@ int main(int argc, char** argv) {
     printf("Shared secret: %d\n", shared_secret_key);
 
     while(1) {
-        char full_command[1000];
-        char* encrypted_content = full_command + sizeof(int);
-        int cmd_buf_size = sizeof(full_command);
-        memset(full_command, 0, cmd_buf_size);
+        char full_message[1000];
+        char* encrypted_content = full_message + sizeof(int);
+        int cmd_buf_size = sizeof(full_message);
+        memset(full_message, 0, cmd_buf_size);
 
+        // read command from stdin
         fgets(encrypted_content, cmd_buf_size, stdin);
         
         // encrypt content
         xor_encrypt_decrypt(encrypted_content, shared_secret_key);
 
-        insert_msg_len(full_command, strlen(encrypted_content));
+        // insert length at the start of string
+        insert_msg_len(full_message, strlen(encrypted_content));
 
+        // length of message to be sent through socket
         int cmd_len = strlen(encrypted_content) + sizeof(int);
 
+        // send full message to server
         printf("Sending: %s\n", encrypted_content); 
-        send_encrypted_msg(sockfd, full_command, cmd_len);        
+        send_encrypted_msg(sockfd, full_message, cmd_len);        
 
-        // receive result from server and print it
+        // receive answer from server
         char full_answer[1000];
         char* encrypted_answer = full_answer + sizeof(int);
         memset(full_answer, 0, sizeof(full_answer));
-
-
         read_encrypted_msg(sockfd, full_answer, 1000);
 
         // decrypt answer

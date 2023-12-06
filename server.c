@@ -172,28 +172,26 @@ void client_handler(int sockfd) {
     printf("Shared secret: %d\n", shared_secret_key);
 
     while(1) {
-        char full_command[1000];
-        char* encrypted_content = full_command + 4;
-        int buf_len = sizeof(full_command);
-        memset(full_command, 0, 1000);
+        char full_message[1000];
+        char* encrypted_content = full_message + 4;
+        int buf_len = sizeof(full_message);
+        memset(full_message, 0, 1000);
 
-        if(read_encrypted_msg(sockfd, full_command, 1000) == -1) {
+        if(read_encrypted_msg(sockfd, full_message, 1000) == -1) {
             // Client closed connection
             close(sockfd);
             return;
         }
-
+        // decrypt message
         xor_encrypt_decrypt(encrypted_content, shared_secret_key);
 
         printf("Received: %s", encrypted_content);
-        // Send the message back to client
 
+        // encrypt and send the message back to client
         xor_encrypt_decrypt(encrypted_content, shared_secret_key);
 
         printf("Sending: %s\n", encrypted_content);
-
-        send_encrypted_msg(sockfd, full_command ,strlen(encrypted_content) + 4);
-
+        send_encrypted_msg(sockfd, full_message ,strlen(encrypted_content) + 4);
 
     }
 }
