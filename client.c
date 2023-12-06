@@ -13,15 +13,43 @@
 
 typedef unsigned long long ull;
 
-void send_encrypted_message(int sockfd, char* command, int cmd_len) {
-    if(command[cmd_len - 1] != '\n') {
-        command[cmd_len] = '\n';
-    }
-    command[cmd_len] = '\n';
-    if(-1 == write(sockfd, command, strlen(command))) {
+void insert_msg_len(char* command, int msg_len) {
+    int network_msg_len = htonl(msg_len);
+    memcpy(command, &network_msg_len, sizeof(network_msg_len));
+}
+
+void send_encrypted_msg(int sockfd, char* command, int cmd_len) {
+    if(-1 == write(sockfd, command, cmd_len)) {
         perror("Failed to write command");
         exit(EXIT_FAILURE);
     }
+}
+
+int read_encrypted_msg(int sockfd, char* buffer, int buf_size) {
+    int codRead = 0, total_bytes = 0;
+    while(total_bytes < sizeof(int)) {
+        codRead = read(sockfd, buffer + total_bytes, sizeof(int) - total_bytes);
+        if(codRead < 0) {
+            perror("Failed at read():");
+            exit(1);
+        }
+        total_bytes += codRead;
+    }
+    int msg_len = ntohl(*(int*)buffer);
+
+    while(total_bytes < msg_len + sizeof(int)) {
+        codRead = read(sockfd, buffer + total_bytes, msg_len + sizeof(int) - total_bytes);
+        if(codRead < 0) {
+            perror("Failed at read():");
+            exit(1);
+        }
+        total_bytes += codRead;
+        if(codRead == 0) {
+            printf("Partner closed connection\n");
+            return -1;
+        }
+    }
+    return total_bytes;
 }
 
 void network_send_integer(int sockfd, int integer) {
@@ -87,9 +115,6 @@ void xor_encrypt_decrypt(char* data, int key) {
 
     for (size_t i = 0; i < len; ++i) {
         data[i] = data[i] ^ ((char)key);
-        while(data[i] == '\n') {
-            data[i] = data[i] ^ ((char)key);
-        }
 
         // rotate key
         int right = key >> 8;
@@ -141,43 +166,35 @@ int main(int argc, char** argv) {
     printf("Shared secret: %d\n", shared_secret_key);
 
     while(1) {
-        char command[1000];
-        int cmd_len = sizeof(command);
-        memset(command, 0, cmd_len);
+        char full_command[1000];
+        char* encrypted_content = full_command + sizeof(int);
+        int cmd_buf_size = sizeof(full_command);
+        memset(full_command, 0, cmd_buf_size);
 
-        fgets(command, cmd_len, stdin);
-
-        printf("Command: %s", command);
+        fgets(encrypted_content, cmd_buf_size, stdin);
         
-        // encrypt command
-        xor_encrypt_decrypt(command, shared_secret_key);
+        // encrypt content
+        xor_encrypt_decrypt(encrypted_content, shared_secret_key);
 
-        printf("Encrypted command: %s\n", command);
+        insert_msg_len(full_command, strlen(encrypted_content));
 
-        // send_encrypted_message(sockfd, command, cmd_len);
+        int cmd_len = strlen(encrypted_content) + sizeof(int);
 
-        if(-1 == write(sockfd, command, strlen(command))) {
-            perror("Failed to write command");
-            exit(EXIT_FAILURE);
-        }
-        
+        printf("Sending: %s\n", encrypted_content); 
+        send_encrypted_msg(sockfd, full_command, cmd_len);        
 
         // receive result from server and print it
-        char answer[1000];
-        memset(answer, 0, strlen(answer));
-        int codRead = read(sockfd, answer, sizeof(answer));
-        if(codRead == 0) {
-            printf("Server disconnected\n");
-            break;
-        }
-        else if(codRead == -1) {
-            perror("Failed to read from socket");
-            exit(EXIT_FAILURE);
-        }
+        char full_answer[1000];
+        char* encrypted_answer = full_answer + sizeof(int);
+        memset(full_answer, 0, sizeof(full_answer));
+
+
+        read_encrypted_msg(sockfd, full_answer, 1000);
 
         // decrypt answer
-        xor_encrypt_decrypt(answer, shared_secret_key);
-        printf("Answer: %s", answer);
+        xor_encrypt_decrypt(encrypted_answer, shared_secret_key);
+        printf("Answer: %s", encrypted_answer);
+        printf("Size of answer: %d\n", strlen(encrypted_answer)); 
 
 
     }

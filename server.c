@@ -14,25 +14,38 @@
 #define CHUNK_SIZE 4096
 typedef unsigned long long ull;
 
-int read_command(int sockfd, char* buffer, int buf_size) {
-    int codRead = 0, total_bytes = 0;
+void send_encrypted_msg(int sockfd, char* command, int cmd_len) {
+    if(-1 == write(sockfd, command, cmd_len)) {
+        perror("Failed to write command");
+        exit(EXIT_FAILURE);
+    }
+}
 
-    while(codRead = read(sockfd, buffer + total_bytes, buf_size - total_bytes)) {
+int read_encrypted_msg(int sockfd, char* buffer, int buf_size) {
+    int codRead = 0, total_bytes = 0;
+    while(total_bytes < sizeof(int)) {
+        codRead = read(sockfd, buffer + total_bytes, sizeof(int) - total_bytes);
         if(codRead < 0) {
-            perror("Error at read in thread:");
+            perror("Failed at read():");
             exit(1);
         }
+        total_bytes += codRead;
+    }
+    int msg_len = ntohl(*(int*)buffer);
 
-        total_bytes = strlen(buffer);
-        if(buffer[total_bytes - 1] == '\n') {
-            break;
+    while(total_bytes < msg_len + sizeof(int)) {
+        codRead = read(sockfd, buffer + total_bytes, msg_len + sizeof(int) - total_bytes);
+        if(codRead < 0) {
+            perror("Failed at read():");
+            exit(1);
+        }
+        total_bytes += codRead;
+        if(codRead == 0) {
+            printf("Partner closed connection\n");
+            return -1;
         }
     }
-    if(codRead == 0) {
-        //client closed connection, close client sockfd and end thread
-        printf("Client with fd %d closed connection\n", sockfd);
-        return -1;
-    }
+    return total_bytes;
 }
 
 void network_send_integer(int sockfd, int integer) {
@@ -51,10 +64,6 @@ int network_receive_integer(int sockfd) {
     }
     return ntohl(network_integer);
 
-}
-
-int accept_connection() {
-    
 }
 
 
@@ -159,34 +168,27 @@ void client_handler(int sockfd) {
     printf("Shared secret: %d\n", shared_secret_key);
 
     while(1) {
-        char buffer[1000];
-        memset(buffer, 0, 1000);
-        // if(read_command(sockfd, buffer, 1000) == -1) {
-        //     // Client closed connection
-        //     close(sockfd);
-        //     return;
-        // }
-        int codRead = recv(sockfd, buffer, 1000, 0);
-        if(codRead == 0) {
-            printf("Client disconnected\n");
-            break;
-        }
-        else if(codRead == -1) {
-            perror("Failed to read from socket");
-            exit(EXIT_FAILURE);
+        char full_command[1000];
+        char* encrypted_content = full_command + 4;
+        int buf_len = sizeof(full_command);
+        memset(full_command, 0, 1000);
+
+        if(read_encrypted_msg(sockfd, full_command, 1000) == -1) {
+            // Client closed connection
+            close(sockfd);
+            return;
         }
 
-        printf("Received encrypted command: %s\n", buffer);
+        xor_encrypt_decrypt(encrypted_content, shared_secret_key);
 
-        xor_encrypt_decrypt(buffer, shared_secret_key);
-
-        printf("Decrypted command: %s", buffer); 
+        printf("Received: %s", encrypted_content);
         // Send the message back to client
 
-        xor_encrypt_decrypt(buffer, shared_secret_key);
-        printf("Sending: %s\n", buffer);
+        xor_encrypt_decrypt(encrypted_content, shared_secret_key);
 
-        send(sockfd, buffer, strlen(buffer), 0);
+        printf("Sending: %s\n", encrypted_content);
+
+        send_encrypted_msg(sockfd, full_command ,strlen(encrypted_content) + 4);
 
 
     }
@@ -232,4 +234,3 @@ int main(int argc, char** argv)
     }
     return 0;
 }
-
