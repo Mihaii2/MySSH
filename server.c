@@ -10,9 +10,33 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
+#include <pthread.h>
 
 #define CHUNK_SIZE 4096
 typedef unsigned long long ull;
+
+unsigned int calculate_hash(const char* str) {
+    unsigned int hash = 5381;
+    int c;
+
+    while ((c = *str++)) {
+        hash = ((hash << 5) + hash) + c; // djb2 hash algorithm
+    }
+
+    return hash;
+}
+
+void insert_hash(char* command, int hash) {
+    int network_hash = htonl(hash);
+    memcpy(command + strlen(command), &network_hash, sizeof(network_hash));
+}
+
+int extract_and_remove_hash(char* command, int encrypted_content_size) {
+    int hash;
+    memcpy(&hash, command + encrypted_content_size - sizeof(int), sizeof(int));
+    memset(command + encrypted_content_size - sizeof(int), 0, sizeof(int));
+    return ntohl(hash);
+}
 
 void send_encrypted_msg(int sockfd, char* command, int cmd_len) {
     if(-1 == write(sockfd, command, cmd_len)) {
@@ -23,7 +47,8 @@ void send_encrypted_msg(int sockfd, char* command, int cmd_len) {
 
 int read_encrypted_msg(int sockfd, char* buffer, int buf_size) {
     int codRead = 0, total_bytes = 0;
-    while(total_bytes < sizeof(int)) { // read message length(from begginning of buffer)
+    // read message length(from begginning of buffer)
+    while(total_bytes < sizeof(int)) {
         codRead = read(sockfd, buffer + total_bytes, sizeof(int) - total_bytes);
         if(codRead < 0) {
             perror("Failed at read():");
@@ -33,7 +58,8 @@ int read_encrypted_msg(int sockfd, char* buffer, int buf_size) {
     }
     int msg_len = ntohl(*(int*)buffer);
 
-    while(total_bytes < msg_len + sizeof(int)) { // read rest of message
+    // read rest of message
+    while(total_bytes < msg_len + sizeof(int)) {
         codRead = read(sockfd, buffer + total_bytes, msg_len + sizeof(int) - total_bytes);
         if(codRead < 0) {
             perror("Failed at read():");
@@ -145,7 +171,7 @@ void xor_encrypt_decrypt(char* data, int key) {
 int Diffie_Hellman(int sockfd) {
     
     // Generate public key
-    srand(time(NULL) + 1);
+    srand(time(NULL) + getpid());
     int base = 2;
     int modulus = 990366163;
     int private_key = rand() % modulus;
@@ -167,31 +193,56 @@ int Diffie_Hellman(int sockfd) {
     return shared_secret_key;
 }
 
-void client_handler(int sockfd) {
+void* client_handler(void* arg) {
+    int sockfd = *((int*)arg);
     int shared_secret_key = Diffie_Hellman(sockfd);
     printf("Shared secret: %d\n", shared_secret_key);
 
     while(1) {
         char full_message[1000];
-        char* encrypted_content = full_message + 4;
-        int buf_len = sizeof(full_message);
+        char* encrypted_content = full_message + sizeof(int);
+        int buf_size = sizeof(full_message);
+        int encrypted_content_size, bytes_read;
+        int non_encrypted_content_size = sizeof(int);
         memset(full_message, 0, 1000);
 
-        if(read_encrypted_msg(sockfd, full_message, 1000) == -1) {
+        // read encrypted message from client
+        if((bytes_read = read_encrypted_msg(sockfd, full_message, 1000)) == -1) {
             // Client closed connection
             close(sockfd);
-            return;
+            pthread_exit(NULL);
         }
+
+        // encrypted content size is full message size - size of integer(message length)
+        encrypted_content_size = bytes_read - sizeof(int);
+
         // decrypt message
         xor_encrypt_decrypt(encrypted_content, shared_secret_key);
 
+        int received_hash = extract_and_remove_hash(encrypted_content, encrypted_content_size);
+
+        // calculate hash
+        int hash = calculate_hash(encrypted_content);
+
+        // compare hashes
+        if(hash != received_hash) {
+            printf("Connection compromised. Something is modifying your messages\n");
+            close(sockfd);
+            pthread_exit(NULL);
+        }
+
         printf("Received: %s", encrypted_content);
+
+        // insert hash at the end of string
+        insert_hash(encrypted_content, hash);
 
         // encrypt and send the message back to client
         xor_encrypt_decrypt(encrypted_content, shared_secret_key);
 
+        int full_length = encrypted_content_size + non_encrypted_content_size;
+
         printf("Sending: %s\n", encrypted_content);
-        send_encrypted_msg(sockfd, full_message ,strlen(encrypted_content) + 4);
+        send_encrypted_msg(sockfd, full_message , full_length);
 
     }
 }
@@ -202,7 +253,7 @@ int main(int argc, char** argv)
         printf("Usage: %s <port>\n", argv[0]);
         return 1;
     }
-
+    
     struct sockaddr_in address;
     int client, addrlen = sizeof(address), port = atoi(argv[1]);
 
@@ -217,21 +268,14 @@ int main(int argc, char** argv)
             exit(EXIT_FAILURE);
         }
 
-        // Fork a new process to handle the client connection
-        pid_t pid = fork();
-        if (pid < 0)
-        {
-            perror("fork failed");
+        // Create a new thread to handle the client connection
+        pthread_t tid;
+        int* arg = (int*)malloc(sizeof(int));
+        *arg = client;
+
+        if (pthread_create(&tid, NULL, client_handler, (void*)arg) != 0) {
+            perror("pthread_create failed");
             exit(EXIT_FAILURE);
-        }
-        else if (pid == 0)
-        {
-            // Child process
-            close(server_fd);
-
-            client_handler(client);
-
-            exit(0);
         }
     }
     return 0;

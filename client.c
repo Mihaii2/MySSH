@@ -18,6 +18,29 @@ void insert_msg_len(char* command, int msg_len) {
     memcpy(command, &network_msg_len, sizeof(network_msg_len));
 }
 
+unsigned int calculate_hash(const char* str) {
+    unsigned int hash = 5381;
+    int c;
+
+    while ((c = *str++)) {
+        hash = ((hash << 5) + hash) + c; // djb2 hash algorithm
+    }
+
+    return hash;
+}
+
+void insert_hash(char* command, int hash) {
+    int network_hash = htonl(hash);
+    memcpy(command + strlen(command), &network_hash, sizeof(network_hash));
+}
+
+int extract_and_remove_hash(char* command, int encrypted_content_size) {
+    int hash;
+    memcpy(&hash, command + encrypted_content_size - sizeof(int), sizeof(int));
+    memset(command + encrypted_content_size - sizeof(int), 0, sizeof(int));
+    return ntohl(hash);
+}
+
 void send_encrypted_msg(int sockfd, char* command, int cmd_len) {
     if(-1 == write(sockfd, command, cmd_len)) {
         perror("Failed to write command");
@@ -27,7 +50,6 @@ void send_encrypted_msg(int sockfd, char* command, int cmd_len) {
 
 int read_encrypted_msg(int sockfd, char* buffer, int buf_size) {
     int codRead = 0, total_bytes = 0;
-
     // read message length(from begginning of buffer)
     while(total_bytes < sizeof(int)) {
         codRead = read(sockfd, buffer + total_bytes, sizeof(int) - total_bytes);
@@ -97,6 +119,7 @@ int connect_server(int port) {
         perror("Failed to connect to server");
         return 1;
     }
+
 
     return sockfd;
 }
@@ -176,24 +199,37 @@ int main(int argc, char** argv) {
     while(1) {
         char full_message[1000];
         char* encrypted_content = full_message + sizeof(int);
-        int cmd_buf_size = sizeof(full_message);
-        memset(full_message, 0, cmd_buf_size);
+        int buf_size = sizeof(full_message);
+        int encrypted_content_size;
+        int non_encrypted_content_size = sizeof(int);
+        memset(full_message, 0, buf_size);
 
         // read command from stdin
-        fgets(encrypted_content, cmd_buf_size, stdin);
+        fgets(encrypted_content, buf_size - 2*sizeof(int), stdin);
+
+        encrypted_content_size = strlen(encrypted_content);
         
+        // calculate hash of command
+        int hash = (int)calculate_hash(encrypted_content);
+
+        // insert hash at the end of string
+        insert_hash(encrypted_content, hash);
+
+        // increase size of encrypted content to include hash
+        encrypted_content_size += sizeof(int); 
+
         // encrypt content
         xor_encrypt_decrypt(encrypted_content, shared_secret_key);
 
         // insert length at the start of string
-        insert_msg_len(full_message, strlen(encrypted_content));
+        insert_msg_len(full_message, encrypted_content_size);
+
 
         // length of message to be sent through socket
-        int cmd_len = strlen(encrypted_content) + sizeof(int);
+        int full_length = encrypted_content_size + non_encrypted_content_size;
 
         // send full message to server
-        printf("Sending: %s\n", encrypted_content); 
-        send_encrypted_msg(sockfd, full_message, cmd_len);        
+        send_encrypted_msg(sockfd, full_message, full_length);        
 
         // receive answer from server
         char full_answer[1000];
@@ -203,8 +239,22 @@ int main(int argc, char** argv) {
 
         // decrypt answer
         xor_encrypt_decrypt(encrypted_answer, shared_secret_key);
+
+        // calculate hash of answer
+        int received_hash = extract_and_remove_hash(encrypted_answer, encrypted_content_size);
+
+        int calculated_hash = calculate_hash(encrypted_answer);
+
+        if(received_hash != calculated_hash) {
+            printf("Connection compromised. Something is modifying your messages\n");
+            close(sockfd);
+            return 1;
+        }
+
+
+
         printf("Answer: %s", encrypted_answer);
-        printf("Size of answer: %d\n", strlen(encrypted_answer)); 
+        printf("Size of answer: %ld\n", strlen(encrypted_answer)); 
 
 
     }
