@@ -11,8 +11,10 @@
 #include <math.h>
 #include <time.h>
 #include <pthread.h>
+#include <jansson.h>
 
 #define CHUNK_SIZE 4096
+#define USER_NOT_FOUND 1
 typedef unsigned long long ull;
 
 unsigned int calculate_hash(const char* str) {
@@ -31,21 +33,30 @@ void insert_hash(char* command, int hash) {
     memcpy(command + strlen(command), &network_hash, sizeof(network_hash));
 }
 
+void shift_and_insert_msg_len(char* command, int msg_len) {
+    //shift command to the right by sizeof(int) bytes
+    memmove(command + sizeof(int), command, msg_len);
+    
+    int network_msg_len = htonl(msg_len);
+    memcpy(command, &network_msg_len, sizeof(network_msg_len));
+}
+
 int extract_and_remove_hash(char* command, int encrypted_content_size) {
-    int hash;
+    int hash;   
     memcpy(&hash, command + encrypted_content_size - sizeof(int), sizeof(int));
+
     memset(command + encrypted_content_size - sizeof(int), 0, sizeof(int));
     return ntohl(hash);
 }
 
-void send_encrypted_msg(int sockfd, char* command, int cmd_len) {
-    if(-1 == write(sockfd, command, cmd_len)) {
-        perror("Failed to write command");
+void send_socket_msg(const int sockfd, const char* buffer, const int buf_len) {
+    if(-1 == write(sockfd, buffer, buf_len)) {
+        perror("Failed to write buffer");
         exit(EXIT_FAILURE);
     }
 }
 
-int read_encrypted_msg(int sockfd, char* buffer, int buf_size) {
+int read_socket_msg(int sockfd, char* buffer, int buf_size) {
     int codRead = 0, total_bytes = 0;
     // read message length(from begginning of buffer)
     while(total_bytes < sizeof(int)) {
@@ -53,6 +64,10 @@ int read_encrypted_msg(int sockfd, char* buffer, int buf_size) {
         if(codRead < 0) {
             perror("Failed at read():");
             exit(1);
+        }
+        if(codRead == 0) {
+            printf("Partner closed connection\n");
+            return -1;
         }
         total_bytes += codRead;
     }
@@ -168,6 +183,147 @@ void xor_encrypt_decrypt(char* data, int key) {
     }
 }
 
+void encrypt_and_send(const char* const message, const int sockfd, const int shared_secret_key) {
+    char buffer[CHUNK_SIZE + 1000];
+    int buf_size = sizeof(buffer);
+    memset(buffer, 0, buf_size);
+    memcpy(buffer, message, strlen(message));
+
+    int encrypted_content_size;
+    encrypted_content_size = strlen(message);
+
+    // calculate hash of command
+    int hash = calculate_hash(buffer);
+
+    // insert hash at the end of string 
+    insert_hash(buffer, hash);
+    
+    // increase size of encrypted content to include hash
+    encrypted_content_size += sizeof(int);
+
+    // encrypt content
+    
+    xor_encrypt_decrypt(buffer, shared_secret_key);
+
+    // insert length at the start of string
+    shift_and_insert_msg_len(buffer, encrypted_content_size);
+    int non_encrypted_content_size = sizeof(int);
+
+    // length of message to be sent through socket
+    int full_length = encrypted_content_size + non_encrypted_content_size;
+
+    // send full message to server
+    send_socket_msg(sockfd, buffer, full_length);
+}
+
+void read_and_decrypt(const int sockfd, char* output_buffer, const int shared_secret_key) {
+    char buffer[CHUNK_SIZE + 1000];
+    int bytes_read;
+    char* encrypted_content = buffer + sizeof(int);
+    int encrypted_content_size, non_encrypted_content_size = sizeof(int);
+    memset(buffer, 0, sizeof(buffer));
+
+    // read encrypted message from client
+    if((bytes_read = read_socket_msg(sockfd, buffer, 1000)) == -1) {
+        // Client closed connection
+        close(sockfd);
+        pthread_exit(NULL);
+    }
+
+    // encrypted content size is full message size - size of integer(message length at the beggining of message is not encrypted)
+    encrypted_content_size = bytes_read - sizeof(int);
+
+    // decrypt message
+    xor_encrypt_decrypt(encrypted_content, shared_secret_key);
+
+    int received_hash = extract_and_remove_hash(encrypted_content, encrypted_content_size);
+
+    // remove hash from encrypted content size
+    encrypted_content_size -= sizeof(int);
+
+    // calculate hash
+    int hash = calculate_hash(encrypted_content);        
+
+    // compare hashes
+    if(hash != received_hash) {
+        printf("Connection compromised. Something is modifying your messages\n");
+        close(sockfd);
+        pthread_exit(NULL);
+    }
+
+    memcpy(output_buffer, encrypted_content, encrypted_content_size);
+}
+
+int authenticate_user(const int sockfd, const int shared_secret_key) {
+    char user_info[1000];
+    memset(user_info, 0, sizeof(user_info));
+
+    read_and_decrypt(sockfd, user_info, shared_secret_key);
+
+    char username[100], password[100];
+    memset(username, 0, sizeof(username));
+    memset(password, 0, sizeof(password));
+
+    // extract username and password from message
+    sscanf(user_info, "%[^:]:%s", username, password);
+    printf("Username: %s\n", username);
+    printf("Password: %s\n", password);
+
+    // check if username and password exist in the json file
+    json_t *root;
+    json_error_t error;
+
+    root = json_load_file("users.json", 0, &error);
+    if(!root) {
+        printf("Error loading json file: %s\n", error.text);
+        exit(EXIT_FAILURE);
+    }
+
+    // search the username in the json file
+    json_t *users, *user;
+    size_t index;
+    users = root;
+
+    if(!json_is_array(users)) {
+        printf("Root element is not an array\n");
+        exit(EXIT_FAILURE);
+    }
+
+    json_array_foreach(users, index, user) {
+        const char *username_str = json_string_value(json_object_get(user, "username"));
+        printf("Found username: %s\n", username_str);
+        if (strcmp(username, username_str) == 0) {
+            // Found the user, check if password is correct
+            const char *password_str = json_string_value(json_object_get(user, "password"));
+            printf("Found password: %s\n", password_str);
+
+            if(strcmp(password, password_str) == 0) {
+                // password is correct
+                printf("Password is correct\n");
+                json_decref(root);
+                break;
+            } else {
+                // password is incorrect
+                printf("Password is incorrect\n");
+                json_decref(root);
+                return USER_NOT_FOUND;
+            }
+            
+        }
+    }
+
+    if(index == json_array_size(users)) {
+        // username not found
+        printf("Username not found\n");
+        json_decref(root);
+        return USER_NOT_FOUND;
+    }
+
+    json_decref(root);
+    encrypt_and_send("User authenticated", sockfd, shared_secret_key);
+    return 0;
+}
+
 int Diffie_Hellman(int sockfd) {
     
     // Generate public key
@@ -198,52 +354,23 @@ void* client_handler(void* arg) {
     int shared_secret_key = Diffie_Hellman(sockfd);
     printf("Shared secret: %d\n", shared_secret_key);
 
+    while(USER_NOT_FOUND == authenticate_user(sockfd, shared_secret_key)) {
+        printf("User not found. Try again\n");
+    }
+
+    printf("User authenticated\n");
+
     while(1) {
-        char full_message[1000];
-        char* encrypted_content = full_message + sizeof(int);
-        int buf_size = sizeof(full_message);
-        int encrypted_content_size, bytes_read;
-        int non_encrypted_content_size = sizeof(int);
-        memset(full_message, 0, 1000);
+        char client_command[1000];
+        memset(client_command, 0, sizeof(client_command));
 
-        // read encrypted message from client
-        if((bytes_read = read_encrypted_msg(sockfd, full_message, 1000)) == -1) {
-            // Client closed connection
-            close(sockfd);
-            pthread_exit(NULL);
-        }
+        read_and_decrypt(sockfd, client_command, shared_secret_key);
 
-        // encrypted content size is full message size - size of integer(message length)
-        encrypted_content_size = bytes_read - sizeof(int);
+        printf("Received: %s\n", client_command);
 
-        // decrypt message
-        xor_encrypt_decrypt(encrypted_content, shared_secret_key);
+        printf("Sending %s\n", client_command);
 
-        int received_hash = extract_and_remove_hash(encrypted_content, encrypted_content_size);
-
-        // calculate hash
-        int hash = calculate_hash(encrypted_content);
-
-        // compare hashes
-        if(hash != received_hash) {
-            printf("Connection compromised. Something is modifying your messages\n");
-            close(sockfd);
-            pthread_exit(NULL);
-        }
-
-        printf("Received: %s", encrypted_content);
-
-        // insert hash at the end of string
-        insert_hash(encrypted_content, hash);
-
-        // encrypt and send the message back to client
-        xor_encrypt_decrypt(encrypted_content, shared_secret_key);
-
-        int full_length = encrypted_content_size + non_encrypted_content_size;
-
-        printf("Sending: %s\n", encrypted_content);
-        send_encrypted_msg(sockfd, full_message , full_length);
-
+        encrypt_and_send(client_command, sockfd, shared_secret_key);
     }
 }
 

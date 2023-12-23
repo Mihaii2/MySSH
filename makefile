@@ -1,6 +1,5 @@
 all:
-	gcc server.c -o server
+	gcc server.c -o server -ljansson
 	gcc client.c -o client
-	gcc test.c -o test
 clean:
 	rm server client test

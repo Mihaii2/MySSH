@@ -11,14 +11,18 @@
 #include <math.h>
 #include <time.h>
 
+#define CHUNK_SIZE 4096
 typedef unsigned long long ull;
 
-void insert_msg_len(char* command, int msg_len) {
+void shift_and_insert_msg_len(char* command, int msg_len) {
+    //shift command to the right by sizeof(int) bytes
+    memmove(command + sizeof(int), command, msg_len);
+    
     int network_msg_len = htonl(msg_len);
     memcpy(command, &network_msg_len, sizeof(network_msg_len));
 }
 
-unsigned int calculate_hash(const char* str) {
+int calculate_hash(const char* str) {
     unsigned int hash = 5381;
     int c;
 
@@ -41,14 +45,16 @@ int extract_and_remove_hash(char* command, int encrypted_content_size) {
     return ntohl(hash);
 }
 
-void send_encrypted_msg(int sockfd, char* command, int cmd_len) {
+void send_socket_msg(int sockfd, char* command, int cmd_len) {
+    
+
     if(-1 == write(sockfd, command, cmd_len)) {
         perror("Failed to write command");
         exit(EXIT_FAILURE);
     }
 }
 
-int read_encrypted_msg(int sockfd, char* buffer, int buf_size) {
+int read_socket_msg(int sockfd, char* buffer, int buf_size) {
     int codRead = 0, total_bytes = 0;
     // read message length(from begginning of buffer)
     while(total_bytes < sizeof(int)) {
@@ -56,6 +62,10 @@ int read_encrypted_msg(int sockfd, char* buffer, int buf_size) {
         if(codRead < 0) {
             perror("Failed at read():");
             exit(1);
+        }
+        if(codRead == 0) {
+            printf("Partner closed connection\n");
+            return -1;
         }
         total_bytes += codRead;
     }
@@ -154,7 +164,76 @@ void xor_encrypt_decrypt(char* data, int key) {
     }
 }
 
+void encrypt_and_send(const char* const message, const int sockfd, const int shared_secret_key) {
+    char buffer[CHUNK_SIZE + 1000];
+    int buf_size = sizeof(buffer);
+    memset(buffer, 0, buf_size);
+    memcpy(buffer, message, strlen(message));
 
+    int encrypted_content_size;
+    encrypted_content_size = strlen(message);
+
+    // calculate hash of command
+    int hash = calculate_hash(buffer);
+
+    // insert hash at the end of string 
+    insert_hash(buffer, hash);
+    
+    // increase size of encrypted content to include hash
+    encrypted_content_size += sizeof(int);
+
+    // encrypt content
+    
+    xor_encrypt_decrypt(buffer, shared_secret_key);
+
+    // insert length at the start of string
+    shift_and_insert_msg_len(buffer, encrypted_content_size);
+    int non_encrypted_content_size = sizeof(int);
+
+    // length of message to be sent through socket
+    int full_length = encrypted_content_size + non_encrypted_content_size;
+
+    // send full message to server
+    send_socket_msg(sockfd, buffer, full_length);
+}
+
+int authenticate_user(int sockfd, int shared_secret_key) {
+    char buf[1000];
+    
+    // read username and password from stdin
+    printf("Enter username and password in the following format: <username>:<password>\n");
+    fgets(buf, sizeof(buf), stdin);
+
+    encrypt_and_send(buf, sockfd, shared_secret_key);
+
+
+    // receive answer from server
+    char full_answer[1000];
+    char* encrypted_answer_content = full_answer + sizeof(int);
+    memset(full_answer, 0, sizeof(full_answer));
+    int msg_length = read_socket_msg(sockfd, full_answer, 1000);
+    int encrypted_content_size = msg_length - sizeof(int);
+
+    // decrypt answer
+    xor_encrypt_decrypt(encrypted_answer_content, shared_secret_key);
+
+    // calculate hash of answer
+    int received_hash = extract_and_remove_hash(encrypted_answer_content, msg_length - sizeof(int));
+
+    encrypted_content_size -= sizeof(int);
+
+    int calculated_hash = calculate_hash(encrypted_answer_content);
+
+    if(received_hash != calculated_hash) {
+        printf("Connection compromised. Something is modifying your messages\n");
+        close(sockfd);
+        return 1;
+    }
+
+    printf("Answer: %s", encrypted_answer_content);
+
+    return 0;
+}
 
 int Diffie_Hellman(int sockfd) {
     
@@ -196,52 +275,38 @@ int main(int argc, char** argv) {
 
     printf("Shared secret: %d\n", shared_secret_key);
 
+    // TODO - implement server-client authentication
+
+    if(authenticate_user(sockfd, shared_secret_key) == -1) {
+        printf("Authentication failed. Terminating process.\n");
+        close(sockfd);
+        return 1;
+    }
+
+    printf("Authentication successful\n");
     while(1) {
-        char full_message[1000];
-        char* encrypted_content = full_message + sizeof(int);
-        int buf_size = sizeof(full_message);
-        int encrypted_content_size;
-        int non_encrypted_content_size = sizeof(int);
-        memset(full_message, 0, buf_size);
+        char buf[1000];
 
         // read command from stdin
-        fgets(encrypted_content, buf_size - 2*sizeof(int), stdin);
+        printf("Enter command: ");
+        fgets(buf, sizeof(buf), stdin);
 
-        encrypted_content_size = strlen(encrypted_content);
-        
-        // calculate hash of command
-        int hash = (int)calculate_hash(encrypted_content);
-
-        // insert hash at the end of string
-        insert_hash(encrypted_content, hash);
-
-        // increase size of encrypted content to include hash
-        encrypted_content_size += sizeof(int); 
-
-        // encrypt content
-        xor_encrypt_decrypt(encrypted_content, shared_secret_key);
-
-        // insert length at the start of string
-        insert_msg_len(full_message, encrypted_content_size);
-
-
-        // length of message to be sent through socket
-        int full_length = encrypted_content_size + non_encrypted_content_size;
-
-        // send full message to server
-        send_encrypted_msg(sockfd, full_message, full_length);        
+        encrypt_and_send(buf, sockfd, shared_secret_key);
 
         // receive answer from server
         char full_answer[1000];
         char* encrypted_answer = full_answer + sizeof(int);
         memset(full_answer, 0, sizeof(full_answer));
-        read_encrypted_msg(sockfd, full_answer, 1000);
+        int msg_len = read_socket_msg(sockfd, full_answer, 1000);
+        int encrypted_content_size = msg_len - sizeof(int);
 
         // decrypt answer
         xor_encrypt_decrypt(encrypted_answer, shared_secret_key);
 
         // calculate hash of answer
         int received_hash = extract_and_remove_hash(encrypted_answer, encrypted_content_size);
+
+        encrypted_content_size -= sizeof(int);
 
         int calculated_hash = calculate_hash(encrypted_answer);
 
@@ -251,12 +316,8 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-
-
         printf("Answer: %s", encrypted_answer);
         printf("Size of answer: %ld\n", strlen(encrypted_answer)); 
-
-
     }
     
     return 0;

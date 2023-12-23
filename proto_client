@@ -1,17 +1,47 @@
+const { read } = require("fs")
 
 
 
-server = connect_server()
+connect_server()
 
-shared_secret_key = diffieHellman(server)
+public_key = create_pub_key()
+private_key = create_private_key()
 
+
+write(public_key)
+
+read(encrypted_answer)
+
+answer = decrypt_async(encrypted_answer, private_key)
+
+symmetric_key = read_symmetric_key(answer)
+
+while(1) {
+    read(command)
+
+    encrypted_command = encrypt(command, symmetric_key)
+
+    write(encrypted_command)
+
+    encrypted_answer = read()
+
+    answer = decrypt(encrypted_answer, symmetric_key)
+
+    if(answer == user_found) {
+        break
+    }
+    else {
+        print("Wrong username or password. Try again")
+    }
+
+}
 
 while(1) {
     command = read_keyboard_command
 
     add_checksum(command)
 
-    encrypt(command, shared_secret_key)
+    encrypt(command, symmetric_key)
 
     write(command)
 
