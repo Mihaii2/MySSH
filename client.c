@@ -11,7 +11,7 @@
 #include <math.h>
 #include <time.h>
 
-#define CHUNK_SIZE 4096
+#define CHUNK_SIZE 50
 typedef unsigned long long ull;
 
 void shift_and_insert_msg_len(char* command, int msg_len) {
@@ -84,6 +84,11 @@ int read_socket_msg(int sockfd, char* buffer, int buf_size) {
             return -1;
         }
     }
+    // printf("\nBytes values received: ");
+    // for(int i = 0; i < total_bytes; ++i) {
+    //     printf("%d ", buffer[i]);
+    // }
+    // printf("\n");
     return total_bytes;
 }
 
@@ -164,6 +169,43 @@ void xor_encrypt_decrypt(char* data, int key) {
     }
 }
 
+void read_and_decrypt(const int sockfd, char* output_buffer, const int shared_secret_key) {
+    char buffer[CHUNK_SIZE + 1000];
+    int bytes_read;
+    char* encrypted_content = buffer + sizeof(int);
+    int encrypted_content_size, non_encrypted_content_size = sizeof(int);
+    memset(buffer, 0, sizeof(buffer));
+
+    // read encrypted message from client
+    if((bytes_read = read_socket_msg(sockfd, buffer, 1000)) == -1) {
+        printf("Server closed connection\n");
+        close(sockfd);
+        exit(1);
+    }
+
+    // encrypted content size is full message size - size of integer(message length at the beggining of message is not encrypted)
+    encrypted_content_size = bytes_read - sizeof(int);
+
+    // decrypt message
+    xor_encrypt_decrypt(encrypted_content, shared_secret_key);
+
+    int received_hash = extract_and_remove_hash(encrypted_content, encrypted_content_size);
+
+    // remove hash from encrypted content size
+    encrypted_content_size -= sizeof(int);
+
+    // calculate hash
+    int hash = calculate_hash(encrypted_content);        
+
+    // compare hashes
+    if(hash != received_hash) {
+        printf("Connection compromised. Something is modifying your messages\n");
+        exit(1);
+    }
+
+    memcpy(output_buffer, encrypted_content, encrypted_content_size);
+}
+
 void encrypt_and_send(const char* const message, const int sockfd, const int shared_secret_key) {
     char buffer[CHUNK_SIZE + 1000];
     int buf_size = sizeof(buffer);
@@ -198,39 +240,29 @@ void encrypt_and_send(const char* const message, const int sockfd, const int sha
 }
 
 int authenticate_user(int sockfd, int shared_secret_key) {
-    char buf[1000];
-    
-    // read username and password from stdin
     printf("Enter username and password in the following format: <username>:<password>\n");
-    fgets(buf, sizeof(buf), stdin);
+    while(1) {
+        char buf[1000];
+        memset(buf, 0, sizeof(buf));
+        
+        // read username and password from stdin
+        fgets(buf, sizeof(buf), stdin);
 
-    encrypt_and_send(buf, sockfd, shared_secret_key);
+        encrypt_and_send(buf, sockfd, shared_secret_key);
 
+        // receive answer from server
+        char answer[1000];
+        memset(answer, 0, sizeof(answer));
+        
+        read_and_decrypt(sockfd, answer, shared_secret_key);
+        
+        if(strcmp(answer, "User authenticated") == 0) {
+            return 0;
+        }
 
-    // receive answer from server
-    char full_answer[1000];
-    char* encrypted_answer_content = full_answer + sizeof(int);
-    memset(full_answer, 0, sizeof(full_answer));
-    int msg_length = read_socket_msg(sockfd, full_answer, 1000);
-    int encrypted_content_size = msg_length - sizeof(int);
+        printf("Answer: %s\n", answer);
 
-    // decrypt answer
-    xor_encrypt_decrypt(encrypted_answer_content, shared_secret_key);
-
-    // calculate hash of answer
-    int received_hash = extract_and_remove_hash(encrypted_answer_content, msg_length - sizeof(int));
-
-    encrypted_content_size -= sizeof(int);
-
-    int calculated_hash = calculate_hash(encrypted_answer_content);
-
-    if(received_hash != calculated_hash) {
-        printf("Connection compromised. Something is modifying your messages\n");
-        close(sockfd);
-        return 1;
     }
-
-    printf("Answer: %s", encrypted_answer_content);
 
     return 0;
 }
@@ -275,49 +307,33 @@ int main(int argc, char** argv) {
 
     printf("Shared secret: %d\n", shared_secret_key);
 
-    // TODO - implement server-client authentication
-
-    if(authenticate_user(sockfd, shared_secret_key) == -1) {
-        printf("Authentication failed. Terminating process.\n");
-        close(sockfd);
-        return 1;
-    }
+    authenticate_user(sockfd, shared_secret_key);
 
     printf("Authentication successful\n");
     while(1) {
-        char buf[1000];
+        char command[1000];
 
         // read command from stdin
         printf("Enter command: ");
-        fgets(buf, sizeof(buf), stdin);
+        fgets(command, sizeof(command), stdin);
+        // remove newline from command
+        command[strlen(command) - 1] = '\0';
 
-        encrypt_and_send(buf, sockfd, shared_secret_key);
+        encrypt_and_send(command, sockfd, shared_secret_key);
 
         // receive answer from server
-        char full_answer[1000];
-        char* encrypted_answer = full_answer + sizeof(int);
-        memset(full_answer, 0, sizeof(full_answer));
-        int msg_len = read_socket_msg(sockfd, full_answer, 1000);
-        int encrypted_content_size = msg_len - sizeof(int);
+        char answer_chunk[CHUNK_SIZE + 1000];
+        memset(answer_chunk, 0, sizeof(answer_chunk));
 
-        // decrypt answer
-        xor_encrypt_decrypt(encrypted_answer, shared_secret_key);
-
-        // calculate hash of answer
-        int received_hash = extract_and_remove_hash(encrypted_answer, encrypted_content_size);
-
-        encrypted_content_size -= sizeof(int);
-
-        int calculated_hash = calculate_hash(encrypted_answer);
-
-        if(received_hash != calculated_hash) {
-            printf("Connection compromised. Something is modifying your messages\n");
-            close(sockfd);
-            return 1;
+        while(1) {
+            read_and_decrypt(sockfd, answer_chunk, shared_secret_key);
+            if(strcmp(answer_chunk, "\r\r\rEND\r\r\r") == 0) {
+                break;
+            }
+            printf("%s", answer_chunk);
+            memset(answer_chunk, 0, sizeof(answer_chunk));
         }
 
-        printf("Answer: %s", encrypted_answer);
-        printf("Size of answer: %ld\n", strlen(encrypted_answer)); 
     }
     
     return 0;

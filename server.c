@@ -13,7 +13,7 @@
 #include <pthread.h>
 #include <jansson.h>
 
-#define CHUNK_SIZE 4096
+#define CHUNK_SIZE 50
 #define USER_NOT_FOUND 1
 typedef unsigned long long ull;
 
@@ -50,6 +50,12 @@ int extract_and_remove_hash(char* command, int encrypted_content_size) {
 }
 
 void send_socket_msg(const int sockfd, const char* buffer, const int buf_len) {
+    // printf("\nBytes values to be sent: ");
+    // for(int i = 0; i < buf_len; ++i) {
+    //     printf("%d ", buffer[i]);
+    // }
+    // printf("\n");
+    
     if(-1 == write(sockfd, buffer, buf_len)) {
         perror("Failed to write buffer");
         exit(EXIT_FAILURE);
@@ -211,7 +217,7 @@ void encrypt_and_send(const char* const message, const int sockfd, const int sha
 
     // length of message to be sent through socket
     int full_length = encrypted_content_size + non_encrypted_content_size;
-
+    
     // send full message to server
     send_socket_msg(sockfd, buffer, full_length);
 }
@@ -314,13 +320,13 @@ int authenticate_user(const int sockfd, const int shared_secret_key) {
 
     if(index == json_array_size(users)) {
         // username not found
-        printf("Username not found\n");
         json_decref(root);
         return USER_NOT_FOUND;
     }
 
     json_decref(root);
     encrypt_and_send("User authenticated", sockfd, shared_secret_key);
+
     return 0;
 }
 
@@ -355,6 +361,7 @@ void* client_handler(void* arg) {
     printf("Shared secret: %d\n", shared_secret_key);
 
     while(USER_NOT_FOUND == authenticate_user(sockfd, shared_secret_key)) {
+        encrypt_and_send("User not found.", sockfd, shared_secret_key);
         printf("User not found. Try again\n");
     }
 
@@ -367,10 +374,23 @@ void* client_handler(void* arg) {
         read_and_decrypt(sockfd, client_command, shared_secret_key);
 
         printf("Received: %s\n", client_command);
+        // use popen to execute the command
+        FILE* fp = popen(client_command, "r");
+        if(fp == NULL) {
+            perror("Failed to execute command");
+            exit(EXIT_FAILURE);
+        }
 
-        printf("Sending %s\n", client_command);
+        char output[CHUNK_SIZE + 1000];
+        memset(output, 0, sizeof(output));
 
-        encrypt_and_send(client_command, sockfd, shared_secret_key);
+        while(fread(output, 1, CHUNK_SIZE, fp) > 0) {
+            printf("%s", output);
+            encrypt_and_send(output, sockfd, shared_secret_key);
+            memset(output, 0, sizeof(output));
+        }
+
+        encrypt_and_send("\r\r\rEND\r\r\r", sockfd, shared_secret_key);
     }
 }
 
