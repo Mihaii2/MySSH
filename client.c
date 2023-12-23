@@ -22,28 +22,6 @@ void shift_and_insert_msg_len(char* command, int msg_len) {
     memcpy(command, &network_msg_len, sizeof(network_msg_len));
 }
 
-int calculate_hash(const char* str) {
-    unsigned int hash = 5381;
-    int c;
-
-    while ((c = *str++)) {
-        hash = ((hash << 5) + hash) + c; // djb2 hash algorithm
-    }
-
-    return hash;
-}
-
-void insert_hash(char* command, int hash) {
-    int network_hash = htonl(hash);
-    memcpy(command + strlen(command), &network_hash, sizeof(network_hash));
-}
-
-int extract_and_remove_hash(char* command, int encrypted_content_size) {
-    int hash;
-    memcpy(&hash, command + encrypted_content_size - sizeof(int), sizeof(int));
-    memset(command + encrypted_content_size - sizeof(int), 0, sizeof(int));
-    return ntohl(hash);
-}
 
 void send_socket_msg(int sockfd, char* command, int cmd_len) {
     
@@ -65,7 +43,7 @@ int read_socket_msg(int sockfd, char* buffer, int buf_size) {
         }
         if(codRead == 0) {
             printf("Partner closed connection\n");
-            return -1;
+            exit(1);
         }
         total_bytes += codRead;
     }
@@ -81,14 +59,10 @@ int read_socket_msg(int sockfd, char* buffer, int buf_size) {
         total_bytes += codRead;
         if(codRead == 0) {
             printf("Partner closed connection\n");
-            return -1;
+            exit(1);
         }
     }
-    // printf("\nBytes values received: ");
-    // for(int i = 0; i < total_bytes; ++i) {
-    //     printf("%d ", buffer[i]);
-    // }
-    // printf("\n");
+
     return total_bytes;
 }
 
@@ -111,7 +85,6 @@ int network_receive_integer(int sockfd) {
         }
         total_bytes += codRead;
     }
-
     return ntohl(network_integer);
 }
 
@@ -134,8 +107,6 @@ int connect_server(int port) {
         perror("Failed to connect to server");
         return 1;
     }
-
-
     return sockfd;
 }
 
@@ -189,43 +160,19 @@ void read_and_decrypt(const int sockfd, char* output_buffer, const int shared_se
     // decrypt message
     xor_encrypt_decrypt(encrypted_content, shared_secret_key);
 
-    int received_hash = extract_and_remove_hash(encrypted_content, encrypted_content_size);
-
-    // remove hash from encrypted content size
-    encrypted_content_size -= sizeof(int);
-
-    // calculate hash
-    int hash = calculate_hash(encrypted_content);        
-
-    // compare hashes
-    if(hash != received_hash) {
-        printf("Connection compromised. Something is modifying your messages\n");
-        exit(1);
-    }
-
     memcpy(output_buffer, encrypted_content, encrypted_content_size);
 }
 
-void encrypt_and_send(const char* const message, const int sockfd, const int shared_secret_key) {
+void encrypt_and_send(const char* const message, const int sockfd, const int shared_secret_key, const int msg_len) {
     char buffer[CHUNK_SIZE + 1000];
     int buf_size = sizeof(buffer);
     memset(buffer, 0, buf_size);
-    memcpy(buffer, message, strlen(message));
+    memcpy(buffer, message, msg_len);
 
     int encrypted_content_size;
-    encrypted_content_size = strlen(message);
-
-    // calculate hash of command
-    int hash = calculate_hash(buffer);
-
-    // insert hash at the end of string 
-    insert_hash(buffer, hash);
-    
-    // increase size of encrypted content to include hash
-    encrypted_content_size += sizeof(int);
+    encrypted_content_size = msg_len;
 
     // encrypt content
-    
     xor_encrypt_decrypt(buffer, shared_secret_key);
 
     // insert length at the start of string
@@ -234,7 +181,7 @@ void encrypt_and_send(const char* const message, const int sockfd, const int sha
 
     // length of message to be sent through socket
     int full_length = encrypted_content_size + non_encrypted_content_size;
-
+    
     // send full message to server
     send_socket_msg(sockfd, buffer, full_length);
 }
@@ -248,7 +195,7 @@ int authenticate_user(int sockfd, int shared_secret_key) {
         // read username and password from stdin
         fgets(buf, sizeof(buf), stdin);
 
-        encrypt_and_send(buf, sockfd, shared_secret_key);
+        encrypt_and_send(buf, sockfd, shared_secret_key, strlen(buf));
 
         // receive answer from server
         char answer[1000];
@@ -259,33 +206,24 @@ int authenticate_user(int sockfd, int shared_secret_key) {
         if(strcmp(answer, "User authenticated") == 0) {
             return 0;
         }
-
         printf("Answer: %s\n", answer);
-
     }
-
     return 0;
 }
 
 int Diffie_Hellman(int sockfd) {
-    
+
     // Generate public key
     srand(time(NULL));
     int base = 2;
     int modulus = 990366163;
     int private_key = rand() % modulus;
-    printf("Private key: %d\n", private_key);
-    printf("Base: %d\n", base);
-    printf("Modulus: %d\n", modulus);
     int public_key = (int)powerModulo((ull)base, (ull)private_key, (ull)modulus);
 
-    printf("Sending public key: %d\n", public_key);
     network_send_integer(sockfd, public_key);
-
 
     // Receive public key from the server
     int partner_public_key = network_receive_integer(sockfd);
-    
 
     // Calculate shared secret
     int shared_secret_key = powerModulo(partner_public_key, private_key, modulus);
@@ -305,13 +243,11 @@ int main(int argc, char** argv) {
 
     int shared_secret_key = Diffie_Hellman(sockfd);
 
-    printf("Shared secret: %d\n", shared_secret_key);
-
     authenticate_user(sockfd, shared_secret_key);
 
     printf("Authentication successful\n");
     while(1) {
-        char command[1000];
+        char command[1024];
 
         // read command from stdin
         printf("Enter command: ");
@@ -319,7 +255,7 @@ int main(int argc, char** argv) {
         // remove newline from command
         command[strlen(command) - 1] = '\0';
 
-        encrypt_and_send(command, sockfd, shared_secret_key);
+        encrypt_and_send(command, sockfd, shared_secret_key, strlen(command));
 
         // receive answer from server
         char answer_chunk[CHUNK_SIZE + 1000];
@@ -327,14 +263,15 @@ int main(int argc, char** argv) {
 
         while(1) {
             read_and_decrypt(sockfd, answer_chunk, shared_secret_key);
-            if(strcmp(answer_chunk, "\r\r\rEND\r\r\r") == 0) {
+            if(strcmp(answer_chunk, "##MESSAGE_END##") == 0) {
                 break;
             }
             printf("%s", answer_chunk);
             memset(answer_chunk, 0, sizeof(answer_chunk));
+
+            encrypt_and_send("ACK", sockfd, shared_secret_key, strlen("ACK"));
         }
 
     }
-    
     return 0;
 }
