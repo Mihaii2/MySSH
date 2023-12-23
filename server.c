@@ -88,7 +88,6 @@ int network_receive_integer(int sockfd) {
     return ntohl(network_integer);
 }
 
-
 int create_socket(int port, struct sockaddr_in* address_ptr) {
     int server_fd;
     int opt = 1;
@@ -168,6 +167,7 @@ void encrypt_and_send(const char* const msg, const int sockfd, const int shared_
     int encrypted_content_size;
     encrypted_content_size = msg_len;
 
+    // encrypt content
     xor_encrypt_decrypt(buffer, shared_secret_key);
 
     // insert length at the start of string
@@ -188,11 +188,11 @@ void read_and_decrypt(const int sockfd, char* output_buffer, const int shared_se
     int encrypted_content_size, non_encrypted_content_size = sizeof(int);
     memset(buffer, 0, sizeof(buffer));
 
-    // read encrypted message from client
+    // read encrypted message from partner
     if((bytes_read = read_socket_msg(sockfd, buffer, 1000)) == -1) {
-        // Client closed connection
+        printf("Partner closed connection\n");
         close(sockfd);
-        pthread_exit(NULL);
+        exit(1);
     }
 
     // encrypted content size is full message size - size of integer(message length at the beggining of message is not encrypted)
@@ -304,7 +304,7 @@ void* client_handler(void* arg) {
         read_and_decrypt(sockfd, client_command, shared_secret_key);
 
 
-        // use popen to execute the command and redirect stderr to stdout for the command
+        // use popen to execute the command and redirect stderr to stdout for the command so the client can receive the error message
         char client_command_with_error_redirection[1030];
         sprintf(client_command_with_error_redirection, "%s 2>&1", client_command);
         FILE* fp = popen(client_command_with_error_redirection, "r");

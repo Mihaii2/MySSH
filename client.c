@@ -11,7 +11,7 @@
 #include <math.h>
 #include <time.h>
 
-#define CHUNK_SIZE 50
+#define CHUNK_SIZE 4096
 typedef unsigned long long ull;
 
 void shift_and_insert_msg_len(char* command, int msg_len) {
@@ -140,34 +140,11 @@ void xor_encrypt_decrypt(char* data, int key) {
     }
 }
 
-void read_and_decrypt(const int sockfd, char* output_buffer, const int shared_secret_key) {
-    char buffer[CHUNK_SIZE + 1000];
-    int bytes_read;
-    char* encrypted_content = buffer + sizeof(int);
-    int encrypted_content_size, non_encrypted_content_size = sizeof(int);
-    memset(buffer, 0, sizeof(buffer));
-
-    // read encrypted message from client
-    if((bytes_read = read_socket_msg(sockfd, buffer, 1000)) == -1) {
-        printf("Server closed connection\n");
-        close(sockfd);
-        exit(1);
-    }
-
-    // encrypted content size is full message size - size of integer(message length at the beggining of message is not encrypted)
-    encrypted_content_size = bytes_read - sizeof(int);
-
-    // decrypt message
-    xor_encrypt_decrypt(encrypted_content, shared_secret_key);
-
-    memcpy(output_buffer, encrypted_content, encrypted_content_size);
-}
-
-void encrypt_and_send(const char* const message, const int sockfd, const int shared_secret_key, const int msg_len) {
+void encrypt_and_send(const char* const msg, const int sockfd, const int shared_secret_key, const int msg_len) {
     char buffer[CHUNK_SIZE + 1000];
     int buf_size = sizeof(buffer);
     memset(buffer, 0, buf_size);
-    memcpy(buffer, message, msg_len);
+    memcpy(buffer, msg, msg_len);
 
     int encrypted_content_size;
     encrypted_content_size = msg_len;
@@ -184,6 +161,29 @@ void encrypt_and_send(const char* const message, const int sockfd, const int sha
     
     // send full message to server
     send_socket_msg(sockfd, buffer, full_length);
+}
+
+void read_and_decrypt(const int sockfd, char* output_buffer, const int shared_secret_key) {
+    char buffer[CHUNK_SIZE + 1000];
+    int bytes_read;
+    char* encrypted_content = buffer + sizeof(int);
+    int encrypted_content_size, non_encrypted_content_size = sizeof(int);
+    memset(buffer, 0, sizeof(buffer));
+
+    // read encrypted message from partner
+    if((bytes_read = read_socket_msg(sockfd, buffer, 1000)) == -1) {
+        printf("Partner closed connection\n");
+        close(sockfd);
+        exit(1);
+    }
+
+    // encrypted content size is full message size - size of integer(message length at the beggining of message is not encrypted)
+    encrypted_content_size = bytes_read - sizeof(int);
+
+    // decrypt message
+    xor_encrypt_decrypt(encrypted_content, shared_secret_key);
+
+    memcpy(output_buffer, encrypted_content, encrypted_content_size);
 }
 
 int authenticate_user(int sockfd, int shared_secret_key) {
@@ -214,7 +214,7 @@ int authenticate_user(int sockfd, int shared_secret_key) {
 int Diffie_Hellman(int sockfd) {
 
     // Generate public key
-    srand(time(NULL));
+    srand(time(NULL) + getpid());
     int base = 2;
     int modulus = 990366163;
     int private_key = rand() % modulus;
