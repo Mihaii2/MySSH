@@ -62,6 +62,7 @@
     "math.h": "c",
     "common_functions.h": "c",
     "time.h": "c",
-    "stdio.h": "c"
+    "stdio.h": "c",
+    "unistd.h": "c"
   }
 }
