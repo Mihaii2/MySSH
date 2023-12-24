@@ -12,7 +12,6 @@
 #include <time.h>
 #include "common_functions.h"
 
-#define CHUNK_SIZE 4096
 typedef unsigned long long ull;
 
 int connect_server(int port) {
@@ -120,13 +119,12 @@ int main(int argc, char** argv) {
                 printf("Connection terminated\n");
                 exit(1);
             }
+            fflush(stdout);
             if(strcmp(answer_chunk, "##MESSAGE_END##") == 0) {
                 break;
             }
             printf("%s", answer_chunk);
             memset(answer_chunk, 0, sizeof(answer_chunk));
-
-            encrypt_and_send("ACK", sockfd, shared_secret_key, strlen("ACK"));
         }
 
     }

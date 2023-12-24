@@ -8,7 +8,7 @@
 #include <stdlib.h>
 
 typedef unsigned long long ull;
-#define CHUNK_SIZE 4096
+#define CHUNK_SIZE 20
 #define CONN_TERMINATED 2
 
 void shift_and_insert_msg_len(char* command, int msg_len);

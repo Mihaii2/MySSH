@@ -10,11 +10,9 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
-#include <pthread.h>
 #include <jansson.h>
 #include "common_functions.h"
 
-#define CHUNK_SIZE 4096
 #define USER_NOT_FOUND 1
 typedef unsigned long long ull;
 
@@ -142,13 +140,11 @@ int Diffie_Hellman(int sockfd) {
     return shared_secret_key;
 }
 
-void* client_handler(void* arg) {
-    int sockfd = *((int*)arg);
+void client_handler(int sockfd) {
     int shared_secret_key = Diffie_Hellman(sockfd);
 
     while(USER_NOT_FOUND == authenticate_user(sockfd, shared_secret_key)) {
-        encrypt_and_send("User not found.", sockfd, shared_secret_key, strlen("User not found."));
-        printf("User not found. Try again\n");
+        encrypt_and_send("User not found. Try again", sockfd, shared_secret_key, strlen("User not found. Try again"));
     }
     printf("User authenticated\n");
 
@@ -159,11 +155,19 @@ void* client_handler(void* arg) {
         if(CONN_TERMINATED == read_and_decrypt(sockfd, client_command, shared_secret_key)) {
             // partner closed connection
             close(sockfd);
-            free(arg);
-            pthread_detach(pthread_self());
-            pthread_exit(NULL);
+            exit(EXIT_SUCCESS);
         }
-
+        
+        if(strncmp(client_command, "cd ", 3) == 0) {
+            // change directory
+            char* dir = client_command + 3;
+            printf("Changing directory to %s\n", dir);
+            if(chdir(dir) == -1) {
+                encrypt_and_send("Error changing directory\n", sockfd, shared_secret_key, strlen("Error changing directory"));
+            }
+            encrypt_and_send("##MESSAGE_END##", sockfd, shared_secret_key, strlen("##MESSAGE_END##"));
+            continue;
+        }
 
         // use popen to execute the command and redirect stderr to stdout for the command so the client can receive the error message
         char client_command_with_error_redirection[1030];
@@ -174,6 +178,7 @@ void* client_handler(void* arg) {
             perror("Failed to execute command");
             exit(EXIT_FAILURE);
         }
+        
 
         char output[CHUNK_SIZE + 1000];
         memset(output, 0, sizeof(output));
@@ -182,15 +187,6 @@ void* client_handler(void* arg) {
         while((bytes_read = fread(output, 1, CHUNK_SIZE, fp)) > 0) {
             encrypt_and_send(output, sockfd, shared_secret_key, bytes_read);
             memset(output, 0, sizeof(output));
-
-            // wait for client to receive the message
-            char ack[100];
-            memset(ack, 0, sizeof(ack));
-            read_and_decrypt(sockfd, ack, shared_secret_key);
-            if(strcmp(ack, "ACK") != 0) {
-                printf("Client did not send ACK\n");
-                exit(EXIT_FAILURE);
-            }
         }
         encrypt_and_send("##MESSAGE_END##", sockfd, shared_secret_key, strlen("##MESSAGE_END##"));
     }
@@ -215,14 +211,19 @@ int main(int argc, char** argv) {
             exit(EXIT_FAILURE);
         }
 
-        // Create a new thread to handle the client connection
-        pthread_t tid;
-        int* arg = (int*)malloc(sizeof(int));
-        *arg = client;
-
-        if (pthread_create(&tid, NULL, client_handler, (void*)arg) != 0) {
-            perror("pthread_create failed");
+        // Fork a new process to handle the client connection
+        pid_t pid = fork();
+        if (pid == -1) {
+            perror("fork failed");
             exit(EXIT_FAILURE);
+        } else if (pid == 0) {
+            // Child process
+            close(server_fd);
+            client_handler(client);
+            exit(EXIT_SUCCESS);
+        } else {
+            // Parent process
+            close(client);
         }
     }
     return 0;
