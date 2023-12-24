@@ -10,6 +10,7 @@
 typedef unsigned long long ull;
 #define CHUNK_SIZE 4096
 #define CONN_TERMINATED 2
+#define USER_NOT_FOUND 1
 
 void shift_and_insert_msg_len(char* command, int msg_len);
 void send_socket_msg(const int sockfd, const char* buffer, const int buf_len);

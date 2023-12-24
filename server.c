@@ -13,9 +13,6 @@
 #include <jansson.h>
 #include "common_functions.h"
 
-#define USER_NOT_FOUND 1
-typedef unsigned long long ull;
-
 int create_socket(int port, struct sockaddr_in* address_ptr) {
     int server_fd;
     int opt = 1;

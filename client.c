@@ -12,8 +12,6 @@
 #include <time.h>
 #include "common_functions.h"
 
-typedef unsigned long long ull;
-
 int connect_server(int port) {
     // Create a socket
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
