@@ -158,7 +158,6 @@ void client_handler(int sockfd) {
         if(strncmp(client_command, "cd ", 3) == 0) {
             // change directory
             char* dir = client_command + 3;
-            printf("Changing directory to %s\n", dir);
             if(chdir(dir) == -1) {
                 encrypt_and_send("Error changing directory\n", sockfd, shared_secret_key, strlen("Error changing directory"));
             }
@@ -166,9 +165,16 @@ void client_handler(int sockfd) {
             continue;
         }
 
-        // use popen to execute the command and redirect stderr to stdout for the command so the client can receive the error message
+        // use popen to execute the command and in the case the user does not specify error output, redirect stderr to stdout for the command so the client can receive the error message
         char client_command_with_error_redirection[1030];
-        sprintf(client_command_with_error_redirection, "%s 2>&1", client_command);
+        // search if the command contains a error redirection
+        if(strstr(client_command, "2>") != NULL) {
+            // command already contains a error redirection
+            sprintf(client_command_with_error_redirection, "%s", client_command);
+        } else {
+            // command does not contain a error redirection
+            sprintf(client_command_with_error_redirection, "%s 2>&1", client_command);
+        }
         FILE* fp = popen(client_command_with_error_redirection, "r");
 
         if(fp == NULL) {
